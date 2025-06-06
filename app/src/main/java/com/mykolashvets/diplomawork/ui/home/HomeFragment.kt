@@ -3,11 +3,13 @@ package com.mykolashvets.diplomawork.ui.home
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.ImageFormat
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
@@ -41,189 +43,134 @@ class HomeFragment : Fragment() {
     private lateinit var labels: List<String>
 
     companion object {
-        private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+        private const val REQUEST_CODE_CAMERA_PERMISSIONS = 10
+        private const val REQUEST_CODE_STORAGE_PERMISSIONS = 11
+        private val CAMERA_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+        private val STORAGE_PERMISSIONS = if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+        else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         private const val MODEL_INPUT_SIZE = 224
         private const val MODEL_INPUT_CHANNELS = 3
+        private const val PREFS = "mushroom_prefs"
+        private const val KEY_HISTORY = "history_set"
     }
 
+    // ===== SharedPreferences helpers =====
+    private fun saveMushroom(name: String) {
+        val prefs = requireContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val set = prefs.getStringSet(KEY_HISTORY, mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+        set.add(name)
+        prefs.edit().putStringSet(KEY_HISTORY, set).apply()
+    }
+
+    // Лончер для вибору зображення з галереї
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let {
-            val bitmap = if (android.os.Build.VERSION.SDK_INT >= 28) {
-                val source = ImageDecoder.createSource(requireContext().contentResolver, it)
-                ImageDecoder.decodeBitmap(source)
+        if (uri == null) {
+            Toast.makeText(requireContext(), "Не вибрано фото", Toast.LENGTH_SHORT).show(); return@registerForActivityResult }
+        try {
+            val bitmap: Bitmap = if (Build.VERSION.SDK_INT >= 28) {
+                val src = ImageDecoder.createSource(requireContext().contentResolver, uri)
+                ImageDecoder.decodeBitmap(src)
             } else {
-                MediaStore.Images.Media.getBitmap(requireContext().contentResolver, it)
+                @Suppress("DEPRECATION")
+                MediaStore.Images.Media.getBitmap(requireContext().contentResolver, uri)
             }
             processBitmap(bitmap)
+        } catch (e: Exception) {
+            Log.e("HomeFragment", "Gallery decode error", e)
+            Toast.makeText(requireContext(), "Не вдалося обробити фото", Toast.LENGTH_SHORT).show()
         }
     }
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
+    @SuppressLint("MissingInflatedId")
+    override fun onCreateView(inflater: android.view.LayoutInflater, container: android.view.ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
         return binding.root
     }
 
-    @SuppressLint("MissingInflatedId")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-
         previewView = binding.previewView
         labels = loadLabels()
-
-        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
-
         interpreter = Interpreter(loadModelFile("model.tflite"))
 
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets }
+
         binding.btnLiveScan.setOnClickListener {
-            if (allPermissionsGranted()) {
-                startCamera()
-            } else {
-                requestPermissions(REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
-            }
+            if (allGranted(CAMERA_PERMISSIONS)) startCamera()
+            else requestPermissions(CAMERA_PERMISSIONS, REQUEST_CODE_CAMERA_PERMISSIONS)
         }
-
         binding.btnGalleryPick.setOnClickListener {
-            pickImageLauncher.launch("image/*")
+            if (allGranted(STORAGE_PERMISSIONS)) pickImageLauncher.launch("image/*")
+            else requestPermissions(STORAGE_PERMISSIONS, REQUEST_CODE_STORAGE_PERMISSIONS)
         }
     }
 
-    private fun loadLabels(): List<String> {
-        return requireContext().assets.open("labels.txt").bufferedReader().useLines { it.toList() }
+    private fun loadLabels(): List<String> = requireContext().assets.open("labels.txt").bufferedReader().useLines { it.toList() }
+
+    private fun loadModelFile(name: String): MappedByteBuffer {
+        val fd = requireContext().assets.openFd(name); val inStream = FileInputStream(fd.fileDescriptor)
+        return inStream.channel.map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
     }
 
-    private fun loadModelFile(filename: String): MappedByteBuffer {
-        val fileDescriptor = requireContext().assets.openFd(filename)
-        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        val fileChannel = inputStream.channel
-        val startOffset = fileDescriptor.startOffset
-        val declaredLength = fileDescriptor.declaredLength
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
-    }
+    private fun allGranted(perms: Array<String>) = perms.all { ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED }
 
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted()) {
-                startCamera()
-            } else {
-                Toast.makeText(requireContext(), "Permission denied", Toast.LENGTH_SHORT).show()
-                requireActivity().finish()
-            }
+    override fun onRequestPermissionsResult(req: Int, perms: Array<String>, res: IntArray) {
+        super.onRequestPermissionsResult(req, perms, res)
+        when (req) {
+            REQUEST_CODE_CAMERA_PERMISSIONS -> if (allGranted(CAMERA_PERMISSIONS)) startCamera()
+            REQUEST_CODE_STORAGE_PERMISSIONS -> if (allGranted(STORAGE_PERMISSIONS)) pickImageLauncher.launch("image/*")
         }
     }
 
     private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-
-            val preview = Preview.Builder()
-                .build()
-                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-
-            val imageAnalyzer = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also {
-                    it.setAnalyzer(ContextCompat.getMainExecutor(requireContext())) { imageProxy ->
-                        processImage(imageProxy)
-                    }
-                }
-
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(viewLifecycleOwner, cameraSelector, preview, imageAnalyzer)
-            } catch (exc: Exception) {
-                Log.e("CameraX", "Use case binding failed", exc)
-            }
+        val future = ProcessCameraProvider.getInstance(requireContext())
+        future.addListener({
+            val provider = future.get()
+            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+            val analyzer = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+            analyzer.setAnalyzer(ContextCompat.getMainExecutor(requireContext())) { proxy -> handleImageProxy(proxy) }
+            try { provider.unbindAll(); provider.bindToLifecycle(viewLifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyzer) }
+            catch (e: Exception) { Log.e("HomeFragment", "Cam bind fail", e) }
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
-    private fun processImage(imageProxy: ImageProxy) {
-        val bitmap = imageProxy.toBitmap() ?: run {
-            imageProxy.close()
-            return
-        }
+    private fun handleImageProxy(proxy: ImageProxy) { proxy.toBitmap()?.let { processBitmap(it) }; proxy.close() }
 
-        processBitmap(bitmap)
-        imageProxy.close()
-    }
-
-    private fun processBitmap(bitmap: Bitmap) {
-        val resized = Bitmap.createScaledBitmap(bitmap, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, true)
-        val byteBuffer = convertBitmapToByteBuffer(resized)
-
-        val output = Array(1) { FloatArray(labels.size) }
-        interpreter.run(byteBuffer, output)
-
-        val maxIndex = output[0].indices.maxByOrNull { output[0][it] } ?: -1
-        val confidence = if (maxIndex >= 0) output[0][maxIndex] else 0f
-        val label = if (maxIndex in labels.indices) labels[maxIndex] else "Невідомо"
-
+    private fun processBitmap(bmp: Bitmap) {
+        val input = Bitmap.createScaledBitmap(bmp, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, true)
+        val buf = convertBitmapToByteBuffer(input)
+        val out = Array(1) { FloatArray(labels.size) }; interpreter.run(buf, out)
+        val idx = out[0].indices.maxByOrNull { out[0][it] } ?: -1
+        val conf = if (idx >= 0) out[0][idx] else 0f
+        val label = if (idx in labels.indices) labels[idx] else "Невідомо"
+        // ===== save to SharedPreferences =====
+        saveMushroom(label)
+        // ===== show result =====
         requireActivity().runOnUiThread {
-            binding.resultText.apply {
-                text = "$label: ${(confidence * 100).toInt()}%"
-                visibility = View.VISIBLE
-            }
-        }
+            binding.resultText.text = "$label: ${(conf * 100).toInt()}%"; binding.resultText.visibility = View.VISIBLE }
     }
 
-    private fun ImageProxy.toBitmap(): Bitmap? {
-        val yBuffer = planes[0].buffer
-        val uBuffer = planes[1].buffer
-        val vBuffer = planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
+    private fun ImageProxy.toBitmap(): Bitmap? = try {
+        val y = planes[0].buffer; val u = planes[1].buffer; val v = planes[2].buffer
+        val ySize = y.remaining(); val uSize = u.remaining(); val vSize = v.remaining()
         val nv21 = ByteArray(ySize + uSize + vSize)
+        y.get(nv21, 0, ySize); v.get(nv21, ySize, vSize); u.get(nv21, ySize + vSize, uSize)
+        val yuv = android.graphics.YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val out = java.io.ByteArrayOutputStream(); yuv.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
+        android.graphics.BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size()) }
+    catch (e: Exception) { Log.e("HomeFragment", "toBitmap err", e); null }
 
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        val yuvImage = android.graphics.YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
-        val imageBytes = out.toByteArray()
-        return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-    }
-
-    private fun convertBitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
-        val byteBuffer = ByteBuffer.allocateDirect(4 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE * MODEL_INPUT_CHANNELS)
-        byteBuffer.order(ByteOrder.nativeOrder())
-        val intValues = IntArray(MODEL_INPUT_SIZE * MODEL_INPUT_SIZE)
-        bitmap.getPixels(intValues, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        for (pixelValue in intValues) {
-            val r = (pixelValue shr 16 and 0xFF) / 255f
-            val g = (pixelValue shr 8 and 0xFF) / 255f
-            val b = (pixelValue and 0xFF) / 255f
-
-            byteBuffer.putFloat(r)
-            byteBuffer.putFloat(g)
-            byteBuffer.putFloat(b)
+    private fun convertBitmapToByteBuffer(bmp: Bitmap): ByteBuffer {
+        val buf = ByteBuffer.allocateDirect(4 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE * MODEL_INPUT_CHANNELS).apply { order(ByteOrder.nativeOrder()) }
+        val intValues = IntArray(MODEL_INPUT_SIZE * MODEL_INPUT_SIZE); bmp.getPixels(intValues, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        for (pix in intValues) {
+            buf.putFloat(((pix shr 16) and 0xFF) / 255f); buf.putFloat(((pix shr 8) and 0xFF) / 255f); buf.putFloat((pix and 0xFF) / 255f)
         }
-        return byteBuffer
+        return buf
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    override fun onDestroyView() { super.onDestroyView(); _binding = null }
 }
+
