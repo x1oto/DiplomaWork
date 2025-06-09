@@ -7,13 +7,13 @@
 
     <fragment
         android:id="@+id/navigation_home"
-        android:name="com.mykolashvets.diplomawork.ui.home.HomeFragment"
+        android:name="com.mykolashvets.diplomawork.presentation.HomeFragment"
         android:label="@string/title_home"
         tools:layout="@layout/fragment_home" />
 
     <fragment
         android:id="@+id/navigation_dashboard"
-        android:name="com.mykolashvets.diplomawork.ui.dashboard.DashboardFragment"
+        android:name="com.mykolashvets.diplomawork.presentation.DashboardFragment"
         android:label="@string/title_dashboard"
         tools:layout="@layout/fragment_dashboard" />
 

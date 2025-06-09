@@ -1,16 +1,14 @@
-package com.mykolashvets.diplomawork
+package com.mykolashvets.diplomawork.presentation
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.navigation.findNavController
-import androidx.navigation.ui.AppBarConfiguration
-import androidx.navigation.ui.setupActionBarWithNavController
 import androidx.navigation.ui.setupWithNavController
+import com.mykolashvets.diplomawork.R
 import com.mykolashvets.diplomawork.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
